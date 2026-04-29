@@ -9,20 +9,15 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.vector_store import vector_store_retriver
 from src.utils import file_loader, split_doc, embedding
 
-# ── API Key: Streamlit Secrets se lo (deploy pe) ya .env se (local pe) ──────
+# ── API Key ───────────────────────────────────────────────────────────────────
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 if not GOOGLE_API_KEY:
-    st.error("⚠️ GOOGLE_API_KEY not found. Add it in Streamlit Secrets or .env file.")
+    st.error("⚠️ GOOGLE_API_KEY not found. Add it in Streamlit Secrets.")
     st.stop()
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
 # ── Page Config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="RAG Chatbot – Rohit Kumar",
-    page_icon="🤖",
-    layout="centered"
-)
-
+st.set_page_config(page_title="RAG Chatbot – Rohit Kumar", page_icon="🤖", layout="centered")
 st.title("🤖 RAG-Based AI Chatbot")
 st.caption("Upload any PDF and chat with it using Google Gemini + LangChain + FAISS")
 
@@ -34,37 +29,55 @@ if "chain" not in st.session_state:
 if "uploaded_file_name" not in st.session_state:
     st.session_state.uploaded_file_name = None
 
-# ── Sidebar: PDF Upload ───────────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("📄 Upload Document")
     uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
 
     if uploaded_file:
         if uploaded_file.name != st.session_state.uploaded_file_name:
-            with st.spinner("Processing PDF... please wait ⏳"):
+            with st.spinner("Processing PDF... ⏳"):
                 try:
-                    # Save to temp file (file_loader expects a path)
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(uploaded_file.read())
-                        tmp_path = tmp.name
+                    # FIX 1: getvalue() use karo, read() nahi
+                    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                    tmp_file.write(uploaded_file.getvalue())
+                    tmp_file.flush()
+                    tmp_file.close()
 
-                    pages          = file_loader(tmp_path)
-                    splitter       = split_doc()
-                    docs           = splitter.split_documents(pages)
+                    pages = file_loader(tmp_file.name)
+
+                    # FIX 2: empty pages check
+                    if not pages:
+                        st.error("❌ PDF empty hai ya scanned image hai — text-based PDF chahiye")
+                        os.unlink(tmp_file.name)
+                        st.stop()
+
+                    splitter = split_doc()
+                    docs     = splitter.split_documents(pages)
+
+                    # FIX 3: empty chunks filter karo
+                    docs = [d for d in docs if d.page_content.strip()]
+
+                    if not docs:
+                        st.error("❌ Koi valid content nahi mila PDF mein")
+                        os.unlink(tmp_file.name)
+                        st.stop()
+
                     embeddings_model = embedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
-                    llm            = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
-                    parser         = StrOutputParser()
-                    prompt         = ChatPromptTemplate.from_template(system_prompt)
-                    retriever      = vector_store_retriver(docs, embeddings_model)
+                    llm              = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+                    parser           = StrOutputParser()
+                    prompt           = ChatPromptTemplate.from_template(system_prompt)
+                    retriever        = vector_store_retriver(docs, embeddings_model)
 
-                    st.session_state.chain             = rag_chain(llm, parser, prompt, retriever)
+                    st.session_state.chain              = rag_chain(llm, parser, prompt, retriever)
                     st.session_state.uploaded_file_name = uploaded_file.name
-                    st.session_state.chat_history      = []  # reset chat on new doc
+                    st.session_state.chat_history       = []
+                    os.unlink(tmp_file.name)
 
-                    os.unlink(tmp_path)  # cleanup temp file
-                    st.success(f"✅ '{uploaded_file.name}' loaded!")
+                    st.success(f"✅ '{uploaded_file.name}' ready! ({len(docs)} chunks)")
+
                 except Exception as e:
-                    st.error(f"❌ Error processing PDF: {e}")
+                    st.error(f"❌ Error: {e}")
     else:
         st.info("👆 Upload a PDF to start chatting")
 
@@ -72,32 +85,27 @@ with st.sidebar:
         st.session_state.chat_history = []
         st.rerun()
 
-# ── Chat UI ───────────────────────────────────────────────────────────────────
-# Show history
+# ── Chat ──────────────────────────────────────────────────────────────────────
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# Initial greeting if no history
 if not st.session_state.chat_history:
     with st.chat_message("ai"):
         st.write("Hello 👋 Upload a PDF from the sidebar and ask me anything about it!")
 
-# Input
 user_input = st.chat_input(
     "Ask something about the document..." if st.session_state.chain else "Upload a PDF first..."
 )
 
 if user_input:
     if not st.session_state.chain:
-        st.warning("⚠️ Please upload a PDF first from the sidebar.")
+        st.warning("⚠️ Pehle PDF upload karo sidebar se.")
     else:
-        # Show user message
         with st.chat_message("human"):
             st.write(user_input)
         st.session_state.chat_history.append({"role": "human", "content": user_input})
 
-        # Get AI response
         with st.chat_message("ai"):
             with st.spinner("Thinking... 🧠"):
                 try:
