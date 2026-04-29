@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+# .gitignore mein ye add karo pehle:
+.env
+.venv/
+__pycache__/
+*.toml
